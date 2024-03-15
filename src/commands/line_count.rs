@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    ffi::OsStr,
     fs::File,
     io::{BufRead, BufReader},
     path::PathBuf,
@@ -8,7 +9,7 @@ use std::{
 use anyhow::Result;
 use clap::Parser;
 
-use crate::contents::PathContents;
+use crate::{content::Content, utils::get_ok_entry_paths};
 
 #[derive(Debug, Parser)]
 pub struct LineCount {
@@ -64,11 +65,17 @@ impl LineCount {
     }
 
     fn get_total_lines_per_directory(&self) -> Result<HashMap<PathBuf, usize>> {
-        let contents = PathContents::from(&self.path);
+        let mut directories = vec![];
+
+        for path in get_ok_entry_paths(&self.path) {
+            if path.is_dir() {
+                directories.push(path)
+            }
+        }
 
         let mut paths_by_directory = HashMap::new();
 
-        for directory in contents.directories {
+        for directory in directories {
             if let Ok(file_paths) = self.get_files(Some(&directory)) {
                 let total_lines = get_file_length(file_paths)
                     .iter()
@@ -82,14 +89,14 @@ impl LineCount {
     }
 
     fn get_files(&self, path: Option<&PathBuf>) -> Result<Vec<PathBuf>> {
-        let mut contents = PathContents::from(path.unwrap_or(&self.path));
+        let mut content = Content::new();
 
-        contents.add_filter(filter_paths_with_extension(self.file_extension.clone()));
-        contents.add_filter(filter_out_paths_under_folders(
-            self.excluded_folders.clone(),
-        ));
+        content
+            .add_filter(extension_equals(self.file_extension.clone()))
+            .add_filter(file_not_under_folders(self.excluded_folders.clone()))
+            .explore_path(path.unwrap_or(&self.path));
 
-        Ok(contents.get_files())
+        Ok(content.files)
     }
 }
 
@@ -104,21 +111,13 @@ fn get_file_length(file_paths: Vec<PathBuf>) -> Vec<(PathBuf, usize)> {
     file_length_by_file
 }
 
-fn filter_out_paths_under_folders(folders: Vec<String>) -> impl Fn(&mut Vec<PathBuf>) -> () {
-    move |paths| {
-        paths.retain(|path| {
-            !path
-                .iter()
-                .any(|c| folders.contains(&c.to_string_lossy().to_string()))
-        })
-    }
+fn extension_equals(extension: String) -> impl Fn(&PathBuf) -> bool {
+    move |p| p.extension() == Some(OsStr::new(&extension))
 }
 
-fn filter_paths_with_extension(extension: String) -> impl Fn(&mut Vec<PathBuf>) -> () {
-    move |paths| {
-        paths.retain(|path| {
-            let path_extension = path.extension().and_then(|o| o.to_str());
-            path_extension == Some(&extension)
-        })
+fn file_not_under_folders(folders: Vec<String>) -> impl Fn(&PathBuf) -> bool {
+    move |p| {
+        !p.iter()
+            .any(|c| folders.contains(&c.to_string_lossy().to_string()))
     }
 }
